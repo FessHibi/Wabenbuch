@@ -307,6 +307,16 @@
   .stammbaum-desc-item:active{background:var(--wax);}
   .stammbaum-empty{font-size:13px;color:var(--ink-soft);}
 
+  /* Stammbaum-Gesamtübersicht (visueller, eingerückter Baum) */
+  .stb-node-wrap{margin-bottom:6px;}
+  .stb-node{
+    display:flex;align-items:center;gap:10px;background:var(--surface);border:1.5px solid var(--border);
+    border-radius:11px;padding:9px 12px;cursor:pointer;
+  }
+  .stb-node:active{background:var(--wax);}
+  .stb-node .qgen-badge{flex-shrink:0;}
+  .stb-children{margin:6px 0 0 16px;padding-left:14px;border-left:2px dashed var(--border);}
+
   /* Rechtlicher Footer auf der Startseite */
   .legal-footer{text-align:center;margin:22px 0 8px;}
   .legal-footer button{background:none;border:none;color:var(--ink-soft);font-size:12px;text-decoration:underline;cursor:pointer;padding:6px;}
@@ -347,6 +357,13 @@
   .beute-honig{background:linear-gradient(135deg,#F2C664,#C9861F);}
   .beute-brut{background:linear-gradient(135deg,#96633F,#6B4227);}
   .beute-icon{font-size:14px;}
+  .beute-gitter{
+    width:100%;min-height:20px;margin-top:3px;border-radius:2px;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+    font-size:10.5px;font-weight:700;color:#fff;letter-spacing:.02em;
+  }
+  .beute-absperrgitter{background:repeating-linear-gradient(45deg,#8A7A5C,#8A7A5C 4px,#a8996f 4px,#a8996f 8px);}
+  .beute-bienenflucht{background:#7A8FA6;}
   .beute-legend{display:flex;justify-content:center;gap:16px;margin-top:10px;font-size:11.5px;color:var(--ink-soft);}
   .beute-legend-item{display:flex;align-items:center;gap:5px;}
   .beute-legend-dot{width:10px;height:10px;border-radius:3px;}
@@ -454,6 +471,7 @@
   .historie-dot-koenigin{background:#3E6FA6;}
   .historie-dot-kontrolle{background:#8A7A5C;}
   .historie-dot-behandlung{background:#AD4A38;}
+  .historie-dot-honig{background:var(--honey);}
   .historie-date{font-size:11.5px;color:var(--ink-soft);font-weight:700;margin-bottom:1px;}
   .historie-text{font-size:13.5px;}
   .historie-item-link{cursor:pointer;}
@@ -1882,6 +1900,7 @@ global.QRCodeGen = {
 
 /* ---------- Storage helpers ---------- */
 const STORE_KEY = 'wabenbuch-data-v1';
+const APP_VERSION = 'v17 (2026-08-08)'; // bei jedem Update hochzählen, hilft beim Prüfen ob ein Update angekommen ist
 
 /* ============================================================
    RECHTLICHE ANGABEN – vor Veröffentlichung ausfüllen!
@@ -1899,7 +1918,7 @@ const IMPRESSUM = {
   stand: '[Datum]' // Stand der Datenschutzerklärung
 };
 
-let DATA = { staende: [], voelker: [], kontrollen: [], behandlungen: [], aufgeloesteVoelker: [], inventar: [], zuchtdurchgaenge: [] };
+let DATA = { staende: [], voelker: [], kontrollen: [], behandlungen: [], aufgeloesteVoelker: [], inventar: [], zuchtdurchgaenge: [], honigernten: [] };
 
 /* Läuft die App außerhalb der Claude-Umgebung (z. B. lokal auf dem Handy installiert),
    existiert window.storage nicht. In dem Fall auf echtes Browser-localStorage
@@ -1941,6 +1960,7 @@ async function loadData(){
   DATA.aufgeloesteVoelker = DATA.aufgeloesteVoelker || [];
   DATA.inventar = DATA.inventar || [];
   DATA.zuchtdurchgaenge = DATA.zuchtdurchgaenge || [];
+  DATA.honigernten = DATA.honigernten || [];
 }
 async function saveData(){
   try{
@@ -2063,6 +2083,9 @@ let QR_STARTING = false;
 let UMZUG_SELECTED = new Set(); // volkIds ausgewählt in der Bulk-Umzug-Übersicht
 let UMZUG_ZIEL = ''; // standId des Ziels, oder 'neu' für "neuer Stand" (Einzel- und Bulk-Umzug gemeinsam genutzt)
 let INV_CHECKLIST = {}; // {itemName: {checked:bool, gesamt:number}} - Ankreuzliste beim Inventar-Hinzufügen
+let DS_IMPORT_PENDING = null; // geparste Backup-Daten, warten auf Bestätigung vor dem Überschreiben
+let ERNTE_OPEN = null; // volkId, für das gerade das "Honig ernten"-Formular offen ist
+let ZUCHT_SUBTAB = 'uebersicht'; // 'uebersicht' | 'stammbaum' – Reiter innerhalb der Königinnenzucht
 let ZUCHT_ASSIGN_OPEN = null; // {durchgangId, koeniginId, mode:'zusetzen'|'verkaufen'}
 let ZUCHT_NEW_OPEN = false; // true = Formular "Neue Zucht starten" ist auf der Zucht-Übersicht aufgeklappt
 let FORM_OPEN = null; // 'stand' | 'volk' | 'kontrolle' | 'behandlung' | 'koenigin' | null
@@ -2387,11 +2410,11 @@ const ZUCHT_KRITERIEN = [
   {key:'volksstaerke', label:'Volksstärke'},
   {key:'schwarmneigung', label:'Schwarmneigung (gering)'},
   {key:'varroa', label:'Varroabelastung (gering)'},
-  {key:'ertrag', label:'Honigertrag'},
+  {key:'ertrag', label:'Honigertrag (seit aktueller Königin)'},
   {key:'gesundheit', label:'Gesundheit'}
 ];
 function volkZuchtScore(volk, kriterium){
-  if(kriterium==='ertrag') return berechneHonigertrag(volk);
+  if(kriterium==='ertrag') return berechneHonigSeitKoenigin(volk) || null;
   const kontrollen = DATA.kontrollen.filter(k=>k.volkId===volk.id);
   if(!kontrollen.length) return null;
   if(kriterium==='gesundheit'){
@@ -2418,7 +2441,7 @@ function normalizeZuchtScore(kriterium, raw, maxErtrag){
 }
 function rankeMuttervoelker(kriterienKeys){
   const kandidaten = DATA.voelker.filter(v => !(v.ableger && v.ableger.istAbleger));
-  const ertragWerte = kandidaten.map(v=>berechneHonigertrag(v)).filter(v=>v>0);
+  const ertragWerte = kandidaten.map(v=>berechneHonigSeitKoenigin(v)).filter(v=>v>0);
   const maxErtrag = ertragWerte.length ? Math.max(...ertragWerte) : 0;
   const bewertet = kandidaten.map(v=>{
     let sum=0, count=0;
@@ -2596,6 +2619,19 @@ function berechneHonigertrag(volk){
   }
   return Math.round(kg*10)/10;
 }
+function berechneHonigGesamtVolk(volkId){
+  return Math.round(DATA.honigernten.filter(h=>h.volkId===volkId).reduce((sum,h)=> sum+(h.kg||0), 0)*10)/10;
+}
+function berechneHonigImZeitraum(volkId, seit, bis){
+  const kg = DATA.honigernten
+    .filter(h=> h.volkId===volkId && (!seit || h.datum>=seit) && (!bis || h.datum<=bis))
+    .reduce((sum,h)=> sum+(h.kg||0), 0);
+  return Math.round(kg*10)/10;
+}
+function berechneHonigSeitKoenigin(volk){
+  const q = volk.koenigin || {};
+  return berechneHonigImZeitraum(volk.id, q.seitAm || null, null);
+}
 
 /* ---------- Beute (hive box) visualization ---------- */
 function ensureHonigFuellstand(beute){
@@ -2629,12 +2665,16 @@ function beuteVisual(volk, interactive){
       ? `<div class="beute-row">${honigBox}${honigFillControl(i, fill)}</div>`
       : `<div class="beute-row">${honigBox}<div class="fillpct" style="width:44px;text-align:center;">${fill}%</div></div>`;
   }
+  if(b.bienenflucht) boxes += `<div class="beute-gitter beute-bienenflucht"><span class="beute-icon">⇩</span>Bienenflucht</div>`;
+  if(b.absperrgitter) boxes += `<div class="beute-gitter beute-absperrgitter"><span class="beute-icon">▦</span>Absperrgitter</div>`;
   for(let i=0;i<b.brut;i++) boxes += `<div class="beute-box beute-brut"><span class="beute-icon">⬡</span>Brutraum</div>`;
   boxes += `<div class="beute-boden"><div class="beute-flugloch"></div><div class="beute-keil"></div></div>`;
   return `<div class="beute-stack">${boxes}</div>
     <div class="beute-legend">
       <span class="beute-legend-item"><span class="beute-legend-dot" style="background:linear-gradient(135deg,#F2C664,#C9861F);"></span>Honigraum – Füllstand</span>
       <span class="beute-legend-item"><span class="beute-legend-dot" style="background:linear-gradient(135deg,#96633F,#6B4227);"></span>Brutraum</span>
+      ${b.bienenflucht ? `<span class="beute-legend-item"><span class="beute-legend-dot" style="background:#7A8FA6;"></span>Bienenflucht im Einsatz</span>` : ''}
+      ${b.absperrgitter ? `<span class="beute-legend-item"><span class="beute-legend-dot" style="background:#8A7A5C;"></span>Absperrgitter im Einsatz</span>` : ''}
     </div>`;
 }
 function beuteMiniText(volk){
@@ -3352,8 +3392,11 @@ function render(){
   else if(VIEW.name==='qrdruck') app.innerHTML = renderQrDruckView();
   else if(VIEW.name==='stammbaum') app.innerHTML = renderStammbaumView();
   else if(VIEW.name==='umzug') app.innerHTML = renderUmzugView();
+  else if(VIEW.name==='honig-ranking') app.innerHTML = renderHonigRankingView();
+  else if(VIEW.name==='koenigin-historie') app.innerHTML = renderKoeniginHistorieView();
   else if(VIEW.name==='inventar-gruppe') app.innerHTML = renderInventarGruppeView();
   else if(VIEW.name==='rechtliches') app.innerHTML = renderRechtlichesView();
+  else if(VIEW.name==='datensicherung') app.innerHTML = renderDatensicherungView();
   renderModal();
   bindEvents();
   if(SCROLL_TARGET){
@@ -3403,7 +3446,11 @@ function renderHome(){
     ${homeTabsPrimary}
     ${homeTabsSecondary}
     ${body}
-    <div class="legal-footer"><button type="button" id="btn-open-rechtliches">Impressum &amp; Datenschutz</button></div>
+    <div class="legal-footer">
+      <button type="button" id="btn-open-datensicherung">Datensicherung</button>
+      <span style="color:var(--border);">·</span>
+      <button type="button" id="btn-open-rechtliches">Impressum &amp; Datenschutz</button>
+    </div>
   `;
 }
 const HOME_TAB_LABEL = {
@@ -3445,12 +3492,14 @@ function renderHomeBienen(){
 
   const formHtml = FORM_OPEN==='stand' ? renderStandForm() : '';
   const qrDruckBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-qr-druck-alle" style="margin-bottom:10px;">🖨️ QR-Codes für alle Völker drucken</button>` : '';
-  const umzugBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-umzug" style="margin-bottom:14px;">🚚 Völker umstellen</button>` : '';
+  const umzugBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-umzug" style="margin-bottom:10px;">🚚 Völker umstellen</button>` : '';
+  const rankingBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-honig-ranking" style="margin-bottom:14px;">🍯 Honig-Ranking</button>` : '';
 
   return `
     ${formHtml}
     ${qrDruckBtn}
     ${umzugBtn}
+    ${rankingBtn}
     ${list}
     ${FORM_OPEN!=='stand' ? `<div class="fab"><button class="btn btn-primary" id="btn-new-stand">+ Neuer Stand</button></div>` : ''}
   `;
@@ -3491,10 +3540,10 @@ const INVENTAR_KATEGORIEN = ['Boden','Zarge','Deckel','Begattungskästchen','Son
 // "Wiederkehrende Anschaffungen": Material, von dem man mit mehr Völkern auch mehr braucht.
 const INVENTAR_VORSCHLAEGE = {
   einmalig: ['Smoker','Stockmeißel','Abkehrbesen','Schutzanzug / Schleier','Imkerhandschuhe','Honigschleuder','Entdeckelungsgabel','Honigsieb (Doppelsieb)','Abfülleimer mit Quetschhahn','Refraktometer','Sonnenwachsschmelzer','Mittelwand-Einlötgerät','Wasserzerstäuber'],
-  wiederkehrend: ['Boden','Zarge','Deckel','Rähmchen','Mittelwände','Absperrgitter','Begattungskästchen','Fluglochkeile / Mäusegitter']
+  wiederkehrend: ['Boden','Zarge','Deckel','Rähmchen','Mittelwände','Absperrgitter','Bienenflucht','Begattungskästchen','Fluglochkeile / Mäusegitter']
 };
 // Diese Namen lösen automatisches Gebrauchs-Tracking gegen die Völker aus (siehe berechneInGebrauch).
-const INVENTAR_AUTO_KATEGORIEN = ['Boden','Zarge','Deckel','Begattungskästchen','Rähmchen'];
+const INVENTAR_AUTO_KATEGORIEN = ['Boden','Zarge','Deckel','Begattungskästchen','Rähmchen','Absperrgitter','Bienenflucht'];
 function berechneInGebrauch(item){
   if(item.kategorie==='Begattungskästchen'){
     return DATA.zuchtdurchgaenge.reduce((sum,d)=> sum + d.koeniginnen.filter(k=>k.status==='aufzucht').length, 0);
@@ -3513,6 +3562,8 @@ function berechneInGebrauch(item){
       return sum + (((v.beute||{}).brut||0) + ((v.beute||{}).honig||0)) * 10;
     }, 0);
   }
+  if(item.kategorie==='Absperrgitter') return passendeVoelker.filter(v=> (v.beute||{}).absperrgitter).length;
+  if(item.kategorie==='Bienenflucht') return passendeVoelker.filter(v=> (v.beute||{}).bienenflucht).length;
   return 0;
 }
 function berechneGesamtHonigKg(){
@@ -3839,24 +3890,31 @@ function renderZuchtdurchgangKompakt(durchgang){
   </div>`;
 }
 function renderHomeZucht(){
-  const laufende = DATA.zuchtdurchgaenge.slice().sort((a,b)=> b.startdatum.localeCompare(a.startdatum));
+  if(ZUCHT_NEW_OPEN) return renderZuchtNeuForm();
 
-  if(!ZUCHT_NEW_OPEN){
-    const laufendeHtml = laufende.length
-      ? laufende.map(renderZuchtdurchgangKompakt).join('')
-      : `<div class="empty">
-          <div class="bighex" style="width:56px;">${hexSVG(true,56)}</div>
-          <h3 style="margin:6px 0 2px;">Noch keine Zucht gestartet</h3>
-          <p>Starte deinen ersten Zuchtdurchgang, um Empfehlungen und ein Muttervolk vorgeschlagen zu bekommen.</p>
-        </div>`;
-    return `
-      ${laufende.length ? `<h3 style="margin:4px 0 10px;font-size:15px;">Laufende Zuchtdurchgänge</h3>` : ''}
-      ${laufendeHtml}
-      <div class="fab"><button class="btn btn-primary" id="btn-new-zucht">+ Neue Zucht starten</button></div>
-    `;
+  const tabRow = `<div class="tabs" style="margin-bottom:14px;">
+    <div class="tab ${ZUCHT_SUBTAB==='uebersicht'?'active':''}" data-zucht-subtab="uebersicht">Übersicht</div>
+    <div class="tab ${ZUCHT_SUBTAB==='stammbaum'?'active':''}" data-zucht-subtab="stammbaum">Stammbaum</div>
+  </div>`;
+
+  if(ZUCHT_SUBTAB==='stammbaum'){
+    return `${tabRow}${renderZuchtStammbaumUebersicht()}`;
   }
 
-  return renderZuchtNeuForm();
+  const laufende = DATA.zuchtdurchgaenge.slice().sort((a,b)=> b.startdatum.localeCompare(a.startdatum));
+  const laufendeHtml = laufende.length
+    ? laufende.map(renderZuchtdurchgangKompakt).join('')
+    : `<div class="empty">
+        <div class="bighex" style="width:56px;">${hexSVG(true,56)}</div>
+        <h3 style="margin:6px 0 2px;">Noch keine Zucht gestartet</h3>
+        <p>Starte deinen ersten Zuchtdurchgang, um Empfehlungen und ein Muttervolk vorgeschlagen zu bekommen.</p>
+      </div>`;
+  return `
+    ${tabRow}
+    ${laufende.length ? `<h3 style="margin:4px 0 10px;font-size:15px;">Laufende Zuchtdurchgänge</h3>` : ''}
+    ${laufendeHtml}
+    <div class="fab"><button class="btn btn-primary" id="btn-new-zucht">+ Neue Zucht starten</button></div>
+  `;
 }
 function renderZuchtNeuForm(){
   const anzahl = ZUCHT_ANZAHL;
@@ -3961,7 +4019,7 @@ function renderMuttervolkVorschlag(){
     <div class="krit-filter">
       ${ZUCHT_KRITERIEN.map(k=>`<button type="button" class="krit-chip ${aktiv.includes(k.key)?'active':''}" data-krit-toggle="${k.key}">${escapeHtml(k.label)}</button>`).join('')}
     </div>
-    <div class="hint" style="margin:0 0 12px;">Basiert auf dem Durchschnitt aller bisherigen Kontrollen dieses Volkes (bzw. dem geschätzten Honigertrag). Bei mehreren gewählten Kriterien zeigt die Prozentzahl den kombinierten Match. Zum Öffnen antippen.</div>
+    <div class="hint" style="margin:0 0 12px;">Basiert auf dem Durchschnitt aller bisherigen Kontrollen dieses Volkes (bzw. beim Honigertrag: der tatsächlich geernteten Menge seit Zusetzen der aktuell eingesetzten Königin – so wird ihr nur der von ihr bzw. ihren Nachkommen erwirtschaftete Honig gutgeschrieben). Bei mehreren gewählten Kriterien zeigt die Prozentzahl den kombinierten Match. Zum Öffnen antippen.</div>
     ${listHtml}
   </div>`;
 }
@@ -3989,6 +4047,119 @@ function renderStandForm(){
 /* ================= STAND ================= */
 /* ================= QR-DRUCKANSICHT ================= */
 /* ================= STAMMBAUM (F0/F1/F2 …) ================= */
+/* ================= STAMMBAUM-GESAMTÜBERSICHT (visueller Baum) ================= */
+/* ================= INDIVIDUELLE KÖNIGIN-HISTORIE ================= */
+function renderKoeniginHistorieView(){
+  const qId = VIEW.qId;
+  const eintrag = findKoeniginByQId(qId);
+  if(!eintrag){
+    return `
+      <div class="topbar">
+        <button class="backbtn" id="btn-back-koenigin-historie">‹</button>
+        <div><h1 style="font-size:20px;">Historie der Königin</h1></div>
+      </div>
+      <div class="empty"><p>Diese Königin wurde nicht gefunden.</p></div>
+    `;
+  }
+  const gen = koeniginGeneration(qId);
+  const volk = eintrag.volk;
+
+  if(!volk){
+    return `
+      <div class="topbar">
+        <button class="backbtn" id="btn-back-koenigin-historie">‹</button>
+        <div>
+          <h1 style="font-size:20px;">${escapeHtml(koeniginLabel(eintrag.k))}</h1>
+          <div class="sub">F${gen}</div>
+        </div>
+      </div>
+      <div class="empty"><p>Diese Königin ist keinem Volk zugeordnet (z. B. noch in Aufzucht oder verkauft) – es liegt keine Kontroll- oder Ertragshistorie vor.</p></div>
+    `;
+  }
+
+  const seit = eintrag.k.seitAm || null;
+  const bis = eintrag.ort==='historie' ? (eintrag.k.ausgetauschtAm || null) : null;
+  const kontrollen = DATA.kontrollen
+    .filter(k=> k.volkId===volk.id && (!seit || k.datum>=seit) && (!bis || k.datum<=bis))
+    .sort((a,b)=> b.datum.localeCompare(a.datum));
+  const honig = berechneHonigImZeitraum(volk.id, seit, bis);
+
+  const zeitraumText = seit
+    ? ('seit '+fmtDate(seit)+(bis ? ' bis '+fmtDate(bis) : ' (aktuell)'))
+    : 'Zeitraum unbekannt (ältere, nicht datierte Eintragung) – zeigt alle Kontrollen/Ernten dieses Volkes';
+
+  const kontrollenHtml = kontrollen.length ? kontrollen.map(k=>`<div class="entry">
+    <div class="entry-top">
+      <span class="entry-date">${fmtDate(k.datum)}</span>
+      ${healthPill(k.gesundheit)}
+    </div>
+    <div class="ratingchips">
+      <div class="ratingchip">Sanftmut${miniHexIcons(k.sanftmut)}</div>
+      <div class="ratingchip">Wabensitz${miniHexIcons(k.wabensitz)}</div>
+      <div class="ratingchip">Volksstärke${miniHexIcons(k.volksstaerke)}</div>
+      <div class="ratingchip">Schwarmneigung${miniHexIcons(k.schwarmneigung)}</div>
+      <div class="ratingchip">Varroabelastung${miniHexIcons(k.varroa)}</div>
+    </div>
+    ${k.brutbild ? `<div class="entry-body">Brutbild: <b>${escapeHtml(k.brutbild)}</b></div>` : ''}
+    ${k.notiz ? `<div class="entry-body">${escapeHtml(k.notiz)}</div>` : ''}
+  </div>`).join('') : `<div class="empty"><p>Keine Kontrollen in diesem Zeitraum erfasst.</p></div>`;
+
+  return `
+    <div class="topbar">
+      <button class="backbtn" id="btn-back-koenigin-historie">‹</button>
+      <div>
+        <h1 style="font-size:20px;">${escapeHtml(koeniginLabel(eintrag.k))}</h1>
+        <div class="sub">F${gen} · ${escapeHtml(volk.name)}</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Honigertrag in ihrer Zeit</h3>
+      <p class="hint" style="margin:0 0 8px;">${escapeHtml(zeitraumText)}</p>
+      <div class="honig-schaetzung"><span>Geerntet</span><b>${honig} kg</b></div>
+    </div>
+    <div class="stammbaum-section-title">Kontrollen (Brutbild, Sanftmut, Wabensitz, Varroabelastung usw.)</div>
+    ${kontrollenHtml}
+  `;
+}
+
+function renderStammbaumKnotenRekursiv(qId, tiefe){
+  if(tiefe>10) return ''; // Sicherheitsgrenze gegen Zyklen
+  const eintrag = findKoeniginByQId(qId);
+  if(!eintrag) return '';
+  const kinderHtml = koeniginDirekteNachkommen(qId).map(d=>
+    (d.koeniginnen||[]).map(k=> renderStammbaumKnotenRekursiv(k.qId, tiefe+1)).join('')
+  ).join('');
+  return `<div class="stb-node-wrap">
+    <div class="stb-node" data-open-stammbaum-node="${qId}">
+      <span class="qgen-badge">F${tiefe}</span>
+      <div class="stammbaum-node-info">
+        <div class="stammbaum-node-name">${escapeHtml(koeniginLabel(eintrag.k))}</div>
+        <div class="stammbaum-node-meta">${escapeHtml(koeniginOrtLabel(eintrag))}</div>
+      </div>
+      <div class="chev">›</div>
+    </div>
+    ${kinderHtml ? `<div class="stb-children">${kinderHtml}</div>` : ''}
+  </div>`;
+}
+function renderZuchtStammbaumUebersicht(){
+  const seen = new Set();
+  const roots = [];
+  alleKoeniginnenStellen().forEach(x=>{
+    if(!x.k.qId || seen.has(x.k.qId)) return;
+    seen.add(x.k.qId);
+    if(!x.k.mutterKoeniginId) roots.push(x.k.qId);
+  });
+  if(!roots.length){
+    return `<div class="empty">
+      <div class="bighex" style="width:56px;">${hexSVG(true,56)}</div>
+      <h3 style="margin:6px 0 2px;">Noch keine Königinnen erfasst</h3>
+      <p>Sobald du Königinnen einträgst oder Zucht betreibst, erscheint hier ihr Stammbaum.</p>
+    </div>`;
+  }
+  return `<div class="hint" style="margin-bottom:14px;">Alle deine Zuchtlinien im Überblick, von der jeweiligen Stammmutter (F0) bis zu ihren Nachkommen. Antippen führt zu Details und zur Historie der jeweiligen Königin.</div>
+    ${roots.map(qId=>renderStammbaumKnotenRekursiv(qId,0)).join('')}`;
+}
+
 function renderStammbaumView(){
   const qId = VIEW.qId;
   const eintrag = findKoeniginByQId(qId);
@@ -4059,6 +4230,7 @@ function renderStammbaumView(){
     </div>
     <div class="stammbaum-section-title">Abstammung</div>
     <div class="stammbaum-chain">${chainHtml}</div>
+    <button type="button" class="btn btn-secondary btn-block" style="margin-top:10px;" id="btn-open-koenigin-historie" data-qid="${escapeAttr(qId)}">Ihre Historie ansehen (Kontrollen, Honigertrag)</button>
     <div class="stammbaum-section-title">Nachkommen</div>
     <div class="stammbaum-desc-list">${nachkommenHtml}</div>
     <div class="hint" style="margin-top:16px;">
@@ -4113,6 +4285,56 @@ function renderQrDruckView(){
 
 /* ================= VÖLKER UMSTELLEN (BULK) ================= */
 /* ================= IMPRESSUM & DATENSCHUTZ ================= */
+/* ================= DATENSICHERUNG (EXPORT/IMPORT) ================= */
+function datenZusammenfassung(d){
+  return [
+    (d.staende||[]).length+' Stände',
+    (d.voelker||[]).length+' Völker',
+    (d.kontrollen||[]).length+' Kontrollen',
+    (d.behandlungen||[]).length+' Behandlungen',
+    (d.zuchtdurchgaenge||[]).length+' Zuchtdurchgänge',
+    (d.inventar||[]).length+' Inventar-Einträge'
+  ].join(' · ');
+}
+function renderDatensicherungView(){
+  const importPanel = DS_IMPORT_PENDING ? `<div class="panel" style="background:#FBEAE5;border-color:var(--bad);">
+    <h3 style="margin-top:0;">Import bestätigen</h3>
+    <p style="margin:0 0 4px;">Die ausgewählte Datei enthält:</p>
+    <p style="margin:0 0 10px;"><b>${escapeHtml(datenZusammenfassung(DS_IMPORT_PENDING))}</b></p>
+    <div class="hint" style="margin:0 0 12px;">Achtung: Das ersetzt <b>alle</b> aktuell in der App gespeicherten Daten unwiderruflich. Vorher lieber zur Sicherheit die aktuellen Daten exportieren.</div>
+    <div class="formactions">
+      <button class="btn btn-ghost" id="btn-ds-import-abbrechen">Abbrechen</button>
+      <button class="btn btn-primary" id="btn-ds-import-bestaetigen">Überschreiben &amp; importieren</button>
+    </div>
+  </div>` : '';
+
+  return `
+    <div class="topbar">
+      <button class="backbtn" id="btn-back-home">‹</button>
+      <div><h1 style="font-size:20px;">Datensicherung</h1></div>
+    </div>
+    <div class="panel">
+      <h3>Aktueller Datenbestand</h3>
+      <p style="margin:0;">${escapeHtml(datenZusammenfassung(DATA))}</p>
+    </div>
+    <div class="panel">
+      <h3>Exportieren</h3>
+      <p class="hint" style="margin:0 0 12px;">Speichert alle deine Daten (Stände, Völker, Kontrollen, Behandlungen, Zucht, Inventar) als Datei auf deinem Gerät. Empfohlen vor jedem App-Update sowie regelmäßig als Sicherheitskopie.</p>
+      <button type="button" class="btn btn-primary btn-block" id="btn-ds-export">📤 Daten exportieren</button>
+    </div>
+    <div class="panel">
+      <h3>Importieren</h3>
+      <p class="hint" style="margin:0 0 12px;">Lädt eine zuvor exportierte Datei wieder ein – z. B. nach einem Geräte-Wechsel oder wenn Browserdaten verloren gegangen sind. Ersetzt den aktuellen Datenbestand vollständig.</p>
+      <input type="file" id="f-ds-import" accept="application/json,.json" style="display:none;">
+      <button type="button" class="btn btn-secondary btn-block" id="btn-ds-import-open">📥 Datei auswählen …</button>
+    </div>
+    ${importPanel}
+    <div class="hint" style="margin-bottom:20px;">
+      <b>Zu Updates:</b> Solange du künftige Verbesserungen in genau demselben GitHub-Repository/derselben Adresse hochlädst (Dateien ersetzen statt neu anlegen), bleiben deine Daten automatisch erhalten – Updates ändern nur den Code, nicht deinen Browser-Speicher. Diese Export/Import-Funktion ist ein zusätzliches Sicherheitsnetz.<br><br>App-Version: ${escapeHtml(APP_VERSION)}
+    </div>
+  `;
+}
+
 function renderRechtlichesView(){
   const platzhalterOffen = Object.values(IMPRESSUM).some(v=> typeof v==='string' && v.indexOf('[')>=0);
   const warnung = platzhalterOffen ? `<div class="panel" style="background:#FBEAE5;border-color:var(--bad);">
@@ -4160,6 +4382,63 @@ function renderRechtlichesView(){
       <p style="margin-bottom:0;"><b>Datenverlust</b><br>Da alle Daten ausschließlich lokal gespeichert werden, wird keine Haftung für Datenverlust (z. B. durch Gerätewechsel, App-Löschung, technische Defekte) übernommen. Eigene Backups liegen in der Verantwortung des Nutzers.</p>
     </div>
     <div class="hint" style="margin-bottom:20px;">Diese Texte sind erste Entwürfe und keine Rechtsberatung. Bitte vor Veröffentlichung von einer fachkundigen Stelle prüfen lassen.</div>
+  `;
+}
+
+/* ================= HONIG-RANKING ================= */
+function renderHonigRankingView(){
+  const wirtschaftsvoelker = DATA.voelker.filter(v=> !(v.ableger && v.ableger.istAbleger));
+  if(!wirtschaftsvoelker.length){
+    return `
+      <div class="topbar">
+        <button class="backbtn" id="btn-back-home">‹</button>
+        <div><h1 style="font-size:20px;">Honig-Ranking</h1></div>
+      </div>
+      <div class="empty"><p>Noch keine Wirtschaftsvölker vorhanden.</p></div>
+    `;
+  }
+
+  const nachVolk = wirtschaftsvoelker
+    .map(v=>({volk:v, kg: berechneHonigGesamtVolk(v.id)}))
+    .filter(x=>x.kg>0)
+    .sort((a,b)=> b.kg-a.kg);
+
+  const nachKoenigin = wirtschaftsvoelker
+    .map(v=>({volk:v, kg: berechneHonigSeitKoenigin(v)}))
+    .filter(x=>x.kg>0)
+    .sort((a,b)=> b.kg-a.kg);
+
+  function rangListe(arr, leerText, kgLabel){
+    if(!arr.length) return `<div class="hint">${leerText}</div>`;
+    return arr.map((x,i)=>{
+      const stand = DATA.staende.find(s=>s.id===x.volk.standId);
+      const q = x.volk.koenigin||{};
+      return `<div class="mv-card" data-open-volk-ranking="${x.volk.id}">
+        <div class="mv-rank">${i+1}</div>
+        <div class="mv-info">
+          <div class="mv-name">${escapeHtml(x.volk.name)}</div>
+          <div class="mv-stand">${stand?escapeHtml(stand.name):''}${q.name?' · Königin: '+escapeHtml(q.name):''}</div>
+        </div>
+        <div class="mv-score">${x.kg} kg</div>
+      </div>`;
+    }).join('');
+  }
+
+  return `
+    <div class="topbar">
+      <button class="backbtn" id="btn-back-home">‹</button>
+      <div><h1 style="font-size:20px;">Honig-Ranking</h1></div>
+    </div>
+    <div class="panel">
+      <h3>Nach Volk (gesamt über die Jahre)</h3>
+      <div class="hint" style="margin:0 0 10px;">Summe aller jemals bei diesem Volk eingetragenen Ernten, unabhängig davon, welche Königin gerade eingesetzt war/ist.</div>
+      ${rangListe(nachVolk, 'Noch keine Ernten eingetragen.')}
+    </div>
+    <div class="panel">
+      <h3>Nach aktueller Königin</h3>
+      <div class="hint" style="margin:0 0 10px;">Nur der Honig, der seit dem Zusetzen der jeweils aktuell eingesetzten Königin geerntet wurde – relevant für die Zuchtauswahl, da so nur ihr bzw. ihren Nachkommen der Ertrag gutgeschrieben wird.</div>
+      ${rangListe(nachKoenigin, 'Noch keine Ernten seit der jeweils aktuellen Königin eingetragen.')}
+    </div>
   `;
 }
 
@@ -4508,12 +4787,40 @@ function renderVolkUebersicht(volk){
   const istWirtschaftsvolk = !volk.ableger || !volk.ableger.istAbleger;
   const honigAnzahl = (volk.beute||{}).honig || 0;
   const honigDaten = RAHMENMASS_DATEN[volk.rahmenmass] || RAHMENMASS_DATEN['Sonstige'];
+  const aktuelleSchaetzung = berechneHonigertrag(volk);
   const honigSchaetzung = (istWirtschaftsvolk && honigAnzahl>0) ? `
     <div class="honig-schaetzung">
       <span>Voraussichtlicher Honigertrag</span>
-      <b>${berechneHonigertrag(volk)} kg</b>
+      <b>${aktuelleSchaetzung} kg</b>
     </div>
     <div class="hint">Grobe Schätzung aus Füllstand × ${honigDaten.wabenProZarge} Waben je Zarge × ca. ${honigDaten.kgProWabe} kg je voller Wabe (${escapeHtml(volk.rahmenmass||'Sonstige')}).</div>
+  ` : '';
+
+  const ernteButton = (istWirtschaftsvolk && aktuelleSchaetzung>0 && ERNTE_OPEN!==volk.id)
+    ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-ernte" style="margin-top:10px;">🍯 Honig ernten</button>` : '';
+  const ernteForm = ERNTE_OPEN===volk.id ? `<div class="panel" style="margin-top:10px;background:#FBF7EC;">
+    <h3 style="margin-top:0;">Honig ernten</h3>
+    <div class="hint" style="margin:0 0 10px;">Geschätzt waren ${aktuelleSchaetzung} kg im Honigraum. Trage die tatsächlich geerntete Menge ein – beim Speichern werden alle Honigraum-Füllstände dieses Volkes auf 0 zurückgesetzt.</div>
+    <label>Tatsächlich geerntete Menge (kg)</label>
+    <input type="number" step="0.1" min="0" id="f-ernte-kg" value="${aktuelleSchaetzung}">
+    <label>Erntedatum</label>
+    <input type="date" id="f-ernte-datum" value="${todayISO()}">
+    <label>Notiz (optional)</label>
+    <input type="text" id="f-ernte-notiz" placeholder="z. B. Frühtracht, Rapshonig">
+    <div class="formactions">
+      <button class="btn btn-ghost" id="btn-cancel-ernte">Abbrechen</button>
+      <button class="btn btn-primary" id="btn-save-ernte">Ernte eintragen</button>
+    </div>
+  </div>` : '';
+  const honigUebersicht = istWirtschaftsvolk ? `
+    <div class="honig-schaetzung" style="margin-top:10px;">
+      <span>Geerntet seit aktueller Königin${volk.koenigin&&volk.koenigin.seitAm?' (seit '+fmtDate(volk.koenigin.seitAm)+')':''}</span>
+      <b>${berechneHonigSeitKoenigin(volk)} kg</b>
+    </div>
+    <div class="honig-schaetzung">
+      <span>Insgesamt über die Jahre (dieses Volk)</span>
+      <b>${berechneHonigGesamtVolk(volk.id)} kg</b>
+    </div>
   ` : '';
 
   const beutePanel = `<div class="panel" id="panel-beute">
@@ -4537,7 +4844,20 @@ function renderVolkUebersicht(volk){
         </div>
       </div>
     </div>
+    <div class="row2" style="margin-top:14px;">
+      <label class="meilenstein-check">
+        <input type="checkbox" id="f-beute-absperrgitter" ${(volk.beute||{}).absperrgitter?'checked':''}>
+        <span>Absperrgitter eingesetzt</span>
+      </label>
+      <label class="meilenstein-check">
+        <input type="checkbox" id="f-beute-bienenflucht" ${(volk.beute||{}).bienenflucht?'checked':''}>
+        <span>Bienenflucht eingesetzt</span>
+      </label>
+    </div>
     ${honigSchaetzung}
+    ${ernteButton}
+    ${ernteForm}
+    ${honigUebersicht}
   </div>`;
 
   const currentHealth = volk.gesundheit || 'unbekannt';
@@ -4794,6 +5114,9 @@ function collectHistorie(volk){
   DATA.behandlungen.filter(b=>b.volkId===volk.id).forEach(b=>{
     items.push({datum:b.datum, text:'Behandlung: '+(b.mittelBasis||b.mittel), typ:'behandlung', tab:'behandlungen', target:'behandlung-'+b.id});
   });
+  DATA.honigernten.filter(h=>h.volkId===volk.id).forEach(h=>{
+    items.push({datum:h.datum, text:'Honig geerntet: '+h.kg+' kg'+(h.notiz?' ('+h.notiz+')':''), typ:'honig', tab:'uebersicht', target:'panel-beute'});
+  });
   items.sort((a,b)=> (a.datum||'').localeCompare(b.datum||''));
   return items;
 }
@@ -4962,7 +5285,8 @@ function bindEvents(){
         herkunft: 'Eigene Nachzucht ('+methodeName+')',
         begattung: '',
         qId: k.qId,
-        mutterKoeniginId: k.mutterKoeniginId || null
+        mutterKoeniginId: k.mutterKoeniginId || null,
+        seitAm: todayISO()
       };
       k.nummer = nummer;
       k.status = 'zugesetzt';
@@ -5025,6 +5349,60 @@ function bindEvents(){
   });
   const btnOpenRechtliches = document.getElementById('btn-open-rechtliches');
   if(btnOpenRechtliches) btnOpenRechtliches.addEventListener('click', ()=> nav({name:'rechtliches'}));
+
+  // Datensicherung
+  const btnOpenDatensicherung = document.getElementById('btn-open-datensicherung');
+  if(btnOpenDatensicherung) btnOpenDatensicherung.addEventListener('click', ()=>{ DS_IMPORT_PENDING=null; nav({name:'datensicherung'}); });
+  const btnDsExport = document.getElementById('btn-ds-export');
+  if(btnDsExport) btnDsExport.addEventListener('click', ()=>{
+    const json = JSON.stringify(DATA, null, 2);
+    const blob = new Blob([json], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const datum = todayISO();
+    a.href = url;
+    a.download = 'wabenbuch-backup-'+datum+'.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=> URL.revokeObjectURL(url), 2000);
+    showToast('Datensicherung heruntergeladen');
+  });
+  const btnDsImportOpen = document.getElementById('btn-ds-import-open');
+  const fDsImport = document.getElementById('f-ds-import');
+  if(btnDsImportOpen && fDsImport) btnDsImportOpen.addEventListener('click', ()=> fDsImport.click());
+  if(fDsImport) fDsImport.addEventListener('change', ()=>{
+    const file = fDsImport.files && fDsImport.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try{
+        const parsed = JSON.parse(reader.result);
+        const bekannteFelder = ['staende','voelker','kontrollen','behandlungen','aufgeloesteVoelker','inventar','zuchtdurchgaenge','honigernten'];
+        const wirktPlausibel = parsed && typeof parsed==='object' && bekannteFelder.some(k=>Array.isArray(parsed[k]));
+        if(!wirktPlausibel){ showToast('Diese Datei sieht nicht wie eine Wabenbuch-Datensicherung aus'); return; }
+        DS_IMPORT_PENDING = parsed;
+        render();
+      } catch(e){
+        showToast('Datei konnte nicht gelesen werden (kein gültiges JSON)');
+      }
+    };
+    reader.readAsText(file);
+  });
+  const btnDsImportAbbrechen = document.getElementById('btn-ds-import-abbrechen');
+  if(btnDsImportAbbrechen) btnDsImportAbbrechen.addEventListener('click', ()=>{ DS_IMPORT_PENDING=null; render(); });
+  const btnDsImportBestaetigen = document.getElementById('btn-ds-import-bestaetigen');
+  if(btnDsImportBestaetigen) btnDsImportBestaetigen.addEventListener('click', async ()=>{
+    if(!DS_IMPORT_PENDING) return;
+    const bekannteFelder = ['staende','voelker','kontrollen','behandlungen','aufgeloesteVoelker','inventar','zuchtdurchgaenge','honigernten'];
+    const neu = {};
+    bekannteFelder.forEach(k=>{ neu[k] = Array.isArray(DS_IMPORT_PENDING[k]) ? DS_IMPORT_PENDING[k] : []; });
+    DATA = neu;
+    await saveData();
+    DS_IMPORT_PENDING = null;
+    render();
+    showToast('Daten importiert');
+  });
   document.querySelectorAll('[data-inv-open-checklist]').forEach(el=>{
     el.addEventListener('click', ()=>{
       const gruppe = el.getAttribute('data-inv-open-checklist');
@@ -5119,7 +5497,7 @@ function bindEvents(){
     const schwarm = DRAFT.swIstSchwarm ? { herkunft: DRAFT.swHerkunft||'eigen', einordnung: DRAFT.swEinordnung||'' } : null;
     DATA.voelker.push({
       id:uid(), standId: VIEW.standId, name, rasse, rahmenmass, erstelltAm: todayISO(),
-      koenigin:{ jahr:qjahr, farbe:qfarbe, name:qname, nummer:qnummer, herkunft:qherkunft, begattung:qbegattung },
+      koenigin:{ jahr:qjahr, farbe:qfarbe, name:qname, nummer:qnummer, herkunft:qherkunft, begattung:qbegattung, qId:uid(), mutterKoeniginId:null, seitAm: todayISO() },
       koeniginHistory: [],
       beute: { brut:1, honig:0, honigFuellstand:[] },
       ableger, schwarm,
@@ -5165,7 +5543,8 @@ function bindEvents(){
       herkunft: document.getElementById('f-q-herkunft').value.trim(),
       begattung: document.getElementById('f-q-begattung').value,
       qId: bisher.qId,
-      mutterKoeniginId: bisher.mutterKoeniginId || null
+      mutterKoeniginId: bisher.mutterKoeniginId || null,
+      seitAm: bisher.seitAm || null
     };
     await saveData();
     FORM_OPEN=null; DRAFT={}; render();
@@ -5186,7 +5565,8 @@ function bindEvents(){
       herkunft: document.getElementById('f-q-herkunft').value.trim(),
       begattung: document.getElementById('f-q-begattung').value,
       qId: uid(),
-      mutterKoeniginId: null
+      mutterKoeniginId: null,
+      seitAm: todayISO()
     };
     const alt = volk.koenigin || {};
     if(alt.jahr || alt.farbe || alt.herkunft){
@@ -5229,6 +5609,13 @@ function bindEvents(){
   document.querySelectorAll('[data-open-stammbaum-node]').forEach(el=>{
     el.addEventListener('click', ()=> nav({name:'stammbaum', qId: el.getAttribute('data-open-stammbaum-node')}));
   });
+  document.querySelectorAll('[data-zucht-subtab]').forEach(el=>{
+    el.addEventListener('click', ()=>{ ZUCHT_SUBTAB = el.getAttribute('data-zucht-subtab'); render(); });
+  });
+  const btnOpenKoeniginHistorie = document.getElementById('btn-open-koenigin-historie');
+  if(btnOpenKoeniginHistorie) btnOpenKoeniginHistorie.addEventListener('click', ()=> nav({name:'koenigin-historie', qId: btnOpenKoeniginHistorie.getAttribute('data-qid')}));
+  const btnBackKoeniginHistorie = document.getElementById('btn-back-koenigin-historie');
+  if(btnBackKoeniginHistorie) btnBackKoeniginHistorie.addEventListener('click', ()=> nav({name:'home'}));
 
   // Beutenaufbau-Stepper
   document.querySelectorAll('[data-beute-type]').forEach(el=>{
@@ -5243,6 +5630,46 @@ function bindEvents(){
       await saveData();
       render();
     });
+  });
+
+  const fBeuteAbsperrgitter = document.getElementById('f-beute-absperrgitter');
+  if(fBeuteAbsperrgitter) fBeuteAbsperrgitter.addEventListener('change', async ()=>{
+    const volk = DATA.voelker.find(v=>v.id===VIEW.volkId);
+    volk.beute = volk.beute || {brut:1, honig:0, honigFuellstand:[]};
+    volk.beute.absperrgitter = fBeuteAbsperrgitter.checked;
+    await saveData();
+    render();
+  });
+  const fBeuteBienenflucht = document.getElementById('f-beute-bienenflucht');
+  if(fBeuteBienenflucht) fBeuteBienenflucht.addEventListener('change', async ()=>{
+    const volk = DATA.voelker.find(v=>v.id===VIEW.volkId);
+    volk.beute = volk.beute || {brut:1, honig:0, honigFuellstand:[]};
+    volk.beute.bienenflucht = fBeuteBienenflucht.checked;
+    await saveData();
+    render();
+  });
+
+  // Honigernte
+  const btnOpenErnte = document.getElementById('btn-open-ernte');
+  if(btnOpenErnte) btnOpenErnte.addEventListener('click', ()=>{ ERNTE_OPEN = VIEW.volkId; render(); });
+  const btnCancelErnte = document.getElementById('btn-cancel-ernte');
+  if(btnCancelErnte) btnCancelErnte.addEventListener('click', ()=>{ ERNTE_OPEN = null; render(); });
+  const btnSaveErnte = document.getElementById('btn-save-ernte');
+  if(btnSaveErnte) btnSaveErnte.addEventListener('click', async ()=>{
+    const volk = DATA.voelker.find(v=>v.id===VIEW.volkId);
+    const kgEl = document.getElementById('f-ernte-kg');
+    const kg = parseFloat(kgEl ? kgEl.value : '');
+    if(!(kg>=0)){ showToast('Bitte eine gültige Menge (kg) eintragen'); return; }
+    const datum = document.getElementById('f-ernte-datum').value || todayISO();
+    const notiz = document.getElementById('f-ernte-notiz').value.trim();
+    DATA.honigernten.push({id:uid(), volkId:volk.id, datum, kg, notiz});
+    volk.beute = volk.beute || {brut:1, honig:0, honigFuellstand:[]};
+    ensureHonigFuellstand(volk.beute);
+    volk.beute.honigFuellstand = volk.beute.honigFuellstand.map(()=>0);
+    ERNTE_OPEN = null;
+    await saveData();
+    render();
+    showToast('Ernte eingetragen: '+kg+' kg');
   });
 
   // Honigraum-Füllstand
@@ -5564,6 +5991,13 @@ function bindEvents(){
   // Völker umstellen (Bulk, aus Meine Bienen)
   const btnOpenUmzug = document.getElementById('btn-open-umzug');
   if(btnOpenUmzug) btnOpenUmzug.addEventListener('click', ()=>{ UMZUG_SELECTED=new Set(); UMZUG_ZIEL=''; DRAFT={}; nav({name:'umzug'}); });
+
+  // Honig-Ranking
+  const btnOpenHonigRanking = document.getElementById('btn-open-honig-ranking');
+  if(btnOpenHonigRanking) btnOpenHonigRanking.addEventListener('click', ()=> nav({name:'honig-ranking'}));
+  document.querySelectorAll('[data-open-volk-ranking]').forEach(el=>{
+    el.addEventListener('click', ()=> nav({name:'volk', volkId: el.getAttribute('data-open-volk-ranking'), volkTab:'uebersicht'}));
+  });
   document.querySelectorAll('[data-umzug-toggle]').forEach(el=>{
     el.addEventListener('click', ()=>{
       const id = el.getAttribute('data-umzug-toggle');
