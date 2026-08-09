@@ -319,6 +319,10 @@
 
   /* Rechtlicher Footer auf der Startseite */
   .legal-footer{text-align:center;margin:22px 0 8px;}
+  .section-divider{
+    font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);font-weight:700;
+    margin:22px 0 10px;padding-top:16px;border-top:1px solid var(--border);
+  }
   .legal-footer button{background:none;border:none;color:var(--ink-soft);font-size:12px;text-decoration:underline;cursor:pointer;padding:6px;}
 
   /* Völker umstellen (Bulk-Umzug) */
@@ -1900,7 +1904,7 @@ global.QRCodeGen = {
 
 /* ---------- Storage helpers ---------- */
 const STORE_KEY = 'wabenbuch-data-v1';
-const APP_VERSION = 'v17 (2026-08-08)'; // bei jedem Update hochzählen, hilft beim Prüfen ob ein Update angekommen ist
+const APP_VERSION = 'v19 (2026-08-09)'; // bei jedem Update hochzählen, hilft beim Prüfen ob ein Update angekommen ist
 
 /* ============================================================
    RECHTLICHE ANGABEN – vor Veröffentlichung ausfüllen!
@@ -2039,6 +2043,22 @@ function koeniginOrtLabel(eintrag){
 function koeniginDirekteNachkommen(qId){
   // Alle Zuchtdurchgänge, die diese Königin als Muttervolk-Königin genutzt haben.
   return DATA.zuchtdurchgaenge.filter(d=>d.mutterKoeniginId===qId);
+}
+function koeniginNatuerlicheNachkommen(qId){
+  // Töchter, die NICHT über einen Zuchtdurchgang entstanden sind, sondern durch
+  // stille Umweiselung oder Schwarm mit Nachschaffung (direkt auf der Königin
+  // vermerkte mutterKoeniginId, ohne zugehörigen Zuchtdurchgang).
+  const ausZuchtQIds = new Set();
+  DATA.zuchtdurchgaenge.forEach(d=> (d.koeniginnen||[]).forEach(k=> ausZuchtQIds.add(k.qId)));
+  const out = [];
+  const seen = new Set();
+  alleKoeniginnenStellen().forEach(x=>{
+    if(x.k.mutterKoeniginId===qId && x.k.qId && !ausZuchtQIds.has(x.k.qId) && !seen.has(x.k.qId)){
+      seen.add(x.k.qId);
+      out.push(x);
+    }
+  });
+  return out;
 }
 function waehleMuttervolkOhneRanking(){
   // Fallback, falls die Kriterien-Rangliste leer ist (keine passenden Kontrolldaten):
@@ -3491,16 +3511,17 @@ function renderHomeBienen(){
   }
 
   const formHtml = FORM_OPEN==='stand' ? renderStandForm() : '';
-  const qrDruckBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-qr-druck-alle" style="margin-bottom:10px;">🖨️ QR-Codes für alle Völker drucken</button>` : '';
-  const umzugBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-umzug" style="margin-bottom:10px;">🚚 Völker umstellen</button>` : '';
-  const rankingBtn = DATA.voelker.length ? `<button type="button" class="btn btn-secondary btn-block" id="btn-open-honig-ranking" style="margin-bottom:14px;">🍯 Honig-Ranking</button>` : '';
+  const weitereAktionen = DATA.voelker.length ? `
+    <div class="section-divider">Weitere Aktionen</div>
+    <button type="button" class="btn btn-secondary btn-block" id="btn-qr-druck-alle" style="margin-bottom:10px;">🖨️ QR-Codes für alle Völker drucken</button>
+    <button type="button" class="btn btn-secondary btn-block" id="btn-open-umzug" style="margin-bottom:10px;">🚚 Völker umstellen</button>
+    <button type="button" class="btn btn-secondary btn-block" id="btn-open-honig-ranking" style="margin-bottom:10px;">🍯 Honig-Ranking</button>
+  ` : '';
 
   return `
     ${formHtml}
-    ${qrDruckBtn}
-    ${umzugBtn}
-    ${rankingBtn}
     ${list}
+    ${weitereAktionen}
     ${FORM_OPEN!=='stand' ? `<div class="fab"><button class="btn btn-primary" id="btn-new-stand">+ Neuer Stand</button></div>` : ''}
   `;
 }
@@ -4126,9 +4147,11 @@ function renderStammbaumKnotenRekursiv(qId, tiefe){
   if(tiefe>10) return ''; // Sicherheitsgrenze gegen Zyklen
   const eintrag = findKoeniginByQId(qId);
   if(!eintrag) return '';
-  const kinderHtml = koeniginDirekteNachkommen(qId).map(d=>
+  const ausZucht = koeniginDirekteNachkommen(qId).map(d=>
     (d.koeniginnen||[]).map(k=> renderStammbaumKnotenRekursiv(k.qId, tiefe+1)).join('')
   ).join('');
+  const natuerlich = koeniginNatuerlicheNachkommen(qId).map(x=> renderStammbaumKnotenRekursiv(x.k.qId, tiefe+1)).join('');
+  const kinderHtml = ausZucht + natuerlich;
   return `<div class="stb-node-wrap">
     <div class="stb-node" data-open-stammbaum-node="${qId}">
       <span class="qgen-badge">F${tiefe}</span>
@@ -4199,8 +4222,9 @@ function renderStammbaumView(){
   }).join('');
 
   const durchgaenge = koeniginDirekteNachkommen(qId);
+  const natuerlich = koeniginNatuerlicheNachkommen(qId);
   let nachkommenHtml;
-  if(!durchgaenge.length){
+  if(!durchgaenge.length && !natuerlich.length){
     nachkommenHtml = `<div class="stammbaum-empty">Noch keine Nachkommen aus dieser Königin gezogen.</div>`;
   } else {
     nachkommenHtml = durchgaenge.map(d=>{
@@ -4218,6 +4242,20 @@ function renderStammbaumView(){
         ${items}
       </div>`;
     }).join('');
+    if(natuerlich.length){
+      const items = natuerlich.map(x=>`<div class="stammbaum-desc-item" data-open-stammbaum-node="${x.k.qId}">
+        <span class="qgen-badge">F${gen+1}</span>
+        <div class="stammbaum-node-info">
+          <div class="stammbaum-node-name">${escapeHtml(koeniginLabel(x.k))}</div>
+          <div class="stammbaum-node-meta">${escapeHtml(koeniginOrtLabel(x))}</div>
+        </div>
+        <div class="chev">›</div>
+      </div>`).join('');
+      nachkommenHtml += `<div class="stammbaum-desc-group">
+        <div class="stammbaum-desc-group-title">Natürlicher Königinnenwechsel (Umweiseln/Schwarm)</div>
+        ${items}
+      </div>`;
+    }
   }
 
   return `
@@ -4743,6 +4781,26 @@ function renderVolkUebersicht(volk){
         <button class="btn btn-primary" id="${isAustausch?'btn-save-koenigin-austausch':'btn-save-koenigin'}">Speichern</button>
       </div>
     </div>`;
+  } else if(FORM_OPEN==='koenigin-umweiseln'){
+    const grundVal = DRAFT.umweiselnGrund || 'umweiselung';
+    const datumVal = DRAFT.umweiselnDatum || todayISO();
+    koeniginPanel = `<div class="panel">
+      <h3>Stilles Umweiseln / Schwarm erfassen</h3>
+      <div class="hint" style="margin-bottom:10px;">Für den Fall, dass sich das Volk selbstständig eine neue Königin herangezogen und die alte ersetzt hat – ob durch stille Umweiselung (Ersatz ohne Schwarm) oder weil das Volk mit der alten Königin abgeschwärmt ist und hier eine neue Königin geschlüpft ist. In beiden Fällen zählt die neue Königin genetisch als Tochter der bisherigen und wird so auch im Stammbaum verortet – nur eben ohne gezielte Zuchtauswahl (offene Begattung).</div>
+      <label>Was genau ist passiert?</label>
+      <select id="f-umweiseln-grund">
+        <option value="umweiselung" ${grundVal==='umweiselung'?'selected':''}>Stille Umweiselung – Volk hat die Königin ohne Schwarm ersetzt</option>
+        <option value="schwarm-nachschaffung" ${grundVal==='schwarm-nachschaffung'?'selected':''}>Schwarm – Altkönigin mit dem Schwarm abgezogen, hier neue Königin geschlüpft</option>
+      </select>
+      <label>Festgestellt am</label>
+      <input type="date" id="f-umweiseln-datum" value="${escapeAttr(datumVal)}">
+      <label>Notiz (optional)</label>
+      <input type="text" id="f-umweiseln-notiz" placeholder="z. B. beim Kontrollgang entdeckt" value="${escapeAttr(DRAFT.umweiselnNotiz||'')}">
+      <div class="formactions">
+        <button class="btn btn-ghost" id="btn-cancel-koenigin">Abbrechen</button>
+        <button class="btn btn-primary" id="btn-save-koenigin-umweiseln">Erfassen</button>
+      </div>
+    </div>`;
   } else {
     const historyHtml = history.length ? `<div class="qhistory">
       <div class="qhistory-title">Frühere Königinnen</div>
@@ -4778,6 +4836,7 @@ function renderVolkUebersicht(volk){
       ${stammbaumHtml}
       <div class="queen-actions">
         <button class="btn btn-ghost btn-sm" id="btn-edit-koenigin">Angaben korrigieren</button>
+        <button class="btn btn-ghost btn-sm" id="btn-open-koenigin-umweiseln">Stilles Umweiseln / Schwarm erfassen</button>
         <button class="btn btn-primary btn-sm" id="btn-open-koenigin-austausch">Königin austauschen</button>
       </div>
       ${historyHtml}
@@ -5104,7 +5163,11 @@ function collectHistorie(volk){
     }
   }
   (volk.koeniginHistory||[]).forEach(h=>{
-    if(h.ausgetauschtAm) items.push({datum:h.ausgetauschtAm, text:'Königin ausgetauscht'+(h.name?' ('+h.name+')':''), typ:'koenigin', tab:'uebersicht', target:'panel-koenigin'});
+    if(!h.ausgetauschtAm) return;
+    let text = 'Königin ausgetauscht'+(h.name?' ('+h.name+')':'');
+    if(h.ausgetauschtGrund==='umweiselung') text = 'Königin still umgeweiselt (vom Volk selbst ersetzt)'+(h.name?' – zuvor: '+h.name:'');
+    else if(h.ausgetauschtGrund==='schwarm-nachschaffung') text = 'Volk geschwärmt – Altkönigin abgeschwärmt, neue Königin nachgeschafft'+(h.name?' (zuvor: '+h.name+')':'');
+    items.push({datum:h.ausgetauschtAm, text, typ:'koenigin', tab:'uebersicht', target:'panel-koenigin'});
   });
   DATA.kontrollen.filter(k=>k.volkId===volk.id).forEach(k=>{
     let text = 'Kontrolle: '+healthLabel(k.gesundheit);
@@ -5577,6 +5640,48 @@ function bindEvents(){
     await saveData();
     FORM_OPEN=null; DRAFT={}; render();
     showToast('Neue Königin eingetragen');
+  });
+
+  // Königin – stilles Umweiseln / Schwarm mit Nachschaffung
+  const btnOpenUmweiseln = document.getElementById('btn-open-koenigin-umweiseln');
+  if(btnOpenUmweiseln) btnOpenUmweiseln.addEventListener('click', ()=>{ FORM_OPEN='koenigin-umweiseln'; DRAFT={}; render(); });
+  const fUmweiselnGrund = document.getElementById('f-umweiseln-grund');
+  if(fUmweiselnGrund) fUmweiselnGrund.addEventListener('change', ()=>{ DRAFT.umweiselnGrund = fUmweiselnGrund.value; });
+  const fUmweiselnDatum = document.getElementById('f-umweiseln-datum');
+  if(fUmweiselnDatum) fUmweiselnDatum.addEventListener('change', ()=>{ DRAFT.umweiselnDatum = fUmweiselnDatum.value; });
+  const btnSaveUmweiseln = document.getElementById('btn-save-koenigin-umweiseln');
+  if(btnSaveUmweiseln) btnSaveUmweiseln.addEventListener('click', async ()=>{
+    const volk = DATA.voelker.find(v=>v.id===VIEW.volkId);
+    const grund = document.getElementById('f-umweiseln-grund').value;
+    const datum = document.getElementById('f-umweiseln-datum').value || todayISO();
+    const notiz = document.getElementById('f-umweiseln-notiz').value.trim();
+    const alt = volk.koenigin || {};
+    const altQId = (alt.name || alt.nummer || alt.jahr || alt.herkunft || alt.qId) ? ensureKoeniginQId(alt) : null;
+    if(alt.jahr || alt.farbe || alt.herkunft || alt.name){
+      volk.koeniginHistory = volk.koeniginHistory || [];
+      volk.koeniginHistory.unshift(Object.assign({}, alt, {
+        ausgetauschtAm: datum,
+        ausgetauschtGrund: grund,
+        ausgetauschtNotiz: notiz
+      }));
+    }
+    const herkunftText = grund==='schwarm-nachschaffung'
+      ? 'Schwarm mit Nachschaffung (Altkönigin abgeschwärmt)'
+      : 'Stille Umweiselung (vom Volk selbst nachgezogen)';
+    volk.koenigin = {
+      name: '',
+      nummer: '',
+      jahr: String(new Date(datum).getFullYear() || new Date().getFullYear()),
+      farbe: '',
+      herkunft: herkunftText,
+      begattung: 'Standbegattung',
+      qId: uid(),
+      mutterKoeniginId: altQId,
+      seitAm: datum
+    };
+    await saveData();
+    FORM_OPEN=null; DRAFT={}; render();
+    showToast('Erfasst: '+herkunftText);
   });
 
   // Live-Hinweis Farbcode nach Jahr
